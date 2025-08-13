@@ -1,0 +1,340 @@
+PS-05: Intelligent Multilingual Document Understanding
+
+1. General Description
+
+a.
+
+2. Th
+a.
+
+With the explosion of digital technology, we have amassed a huge collection of
+documents in various formats. These documents are structured, visually rich,
+and multilingual—ranging from legal contracts, academic papers to business
+reports, government forms, and presentation decks, social media posts, and
+personal screen shots. These documents exist in diverse formats such as Word
+documents (DOC, DOCX), PDFs, PowerPoint slides (PPT), and scanned
+images (jpeg, png) and including handwritten documents, often containing
+mixed scripts (e.g., English-Arabic or Hindi-English, Chinses-English etc).
+Traditional OCRs do not extract semantically correct text from various elements
+present in the documents. The elements may be Table, Image, Maps, Charts.
+The extracted text is inadvertently mixed/jumbled which is not conducive for
+downstream AIML related tasks. Moreover, mixed scripts present in document
+makes the text extraction challenging.
+
+The Al systems need to generate structured outputs from these documents for
+better indexing and maintaining document layout, enabling better multilingual
+key word search and boosting performance of various downstream models such
+as machine translation, vector search, Named Entity Recognition, Retrieval
+Augmented Generation.
+
+e Challenge
+Multilingual layout-aware document parsing across scripts, formats, and writing
+directions. The following languages will be present in the documents:
+
+i. English
+ii. Hindi
+
+jii. Urdu
+
+iv. Arabic
+v. Nepalese
+vi. Persian
+
+b. Accurately extracting structured information from documents while preserving:
+
+i
+ii.
+ii.
+\2
+V.
+
+C.
+
+i
+ii.
+ii.
+iv.
+V.
+
+Visual hierarchy (headings, sections),
+Semantic grouping (form fields, captions, references),
+Layout fidelity (table structures, image alignment, reading order),
+Embedded elements like charts, plots, maps, and figures.
+Representing the extracted content in a standardized, machine-friendly yet
+human-readable format.
+A document may contain the following:
+Plain text (headers, paragraphs)
+Table
+Image
+Map
+Charts
+
+1|Page
+
+d. The solution should be able to localize the above components and convert them
+into natural language text and provide the output in json format with languages
+identified. The output for the Table, Image, Map, Charts should be the natural
+language description of the contents. For the text extraction the output should be line
+wise bbox co-ordinates with the contents and language.
+
+e. The envisaged output from each element present in a generic document
+mentioned above is indicated in the table below (in json format): -
+
+SNO Element Output
+
+Table to natural language explain the contents into plain text
+
+1 Table paragraphs with the bbox co-ordinates
+2 Image !mage tq natural Ianguage description of the contents of the
+image with bbox co-ordinates
+Map to natural language description of the contents of the Map
+3 Map With bbox co-ordinates
+Chart to natural language description of the contents in the chart
+4 Chart With bbox co-ordinates
+5 Text Extracted text with bbox co-ordinates
+
+3. Dataset: The indicative datasets would be used for preparing the first two stages
+for train/test datasets (not limited too):
+
+DoclLayNet
+PubLayNet
+RvICdip
+ICDAR-MLT 2019
+HI-OCR
+
+FUNSD
+
+SROIE
+
+In third stage, organisation specific data would be used.
+Metrics For evaluation
+Stage Evaluation Parameters Remarks
+
+- The evaluation metrics: Only Document Layout
+
+Stage (@) Document Layout Mean Average would be evaluated in first
+Precision (MaP) at bbox threshold >= 0.5 stage
+
+2nd Result will be evaluated on the following poeument layout, text
+Stage  metrics extraction and
+
+2|Page
+
+3rd
+Stage
+
+a) For Document layout — MaP (Mean table/map/chart to text in
+Average Precision) second stage
+For Text Extraction -CER (Character
+Error Rate)/ WER (word Error rate)
+c) BlueRT + BertScore RT for Chart,
+Map, to Natural Language Text
+d) T2T-Gen for Table to Natural
+Language Text
+e) Language Identification accuracy,
+precision ,recall
+
+o
+=
+
+Result will be evaluated on the following
+metrics
+
+f) For Document layout — MaP (Mean
+Average Precision) Document layout, text
+g) For Text Extraction -CER (Character extraction and
+Error Rate)/ WER(word Error rate) table/map/chart to text in
+h) BleuRT + BertScore for Chart, Map  second stage
+i) T2T-Gen for Table toNatural
+Language Text
+j) Language Identification accuracy,
+precision, recall
+
+4. Dataset arrangement for Stage-1
+
+a. Training Dataset (upto 10 GB): train_set.zip. Participant should use
+
+this indicative dataset for solution development, in addition to open
+source datasets of participants choice. It will be released at TO i.e. 01-
+Aug-2025.
+
+. Mock Dataset (upto 10 GB): Mock_set.zip. Participant should test their
+
+solution on this dataset, but will not have access to the corresponding
+ground truth during the Challenge. This dataset is for self-assessment
+and will not be used for evaluation for selection. Participants need to
+submit the results of their solution on this set. This set will be released
+TO + 45 days i.e. 15-Sep-2025 (single dataset consisting of files in
+different format). A leader board will be published on this Mock Dataset.
+
+. Shortlisting Dataset (upto 10 GB): short_listing_set.zip will be
+
+released at 1100h on 04 Nov 2025. Based on the results submitted on
+this dataset, by 2359h on 05 Nov 2025, 15-20 participants will be
+shortlisted for offline solution evaluation.
+
+. Holdout Test Set (upto 10 GB): After the Challenge deadline, a private
+
+ranking will be computed using this holdout set. This set will be made
+available during final evaluation post 04-Nov-2025.
+
+3|Page
+
+5. Input/ Output Instructions
+
+a. Input
+
+The input to the participants would be jpeg/png images of documents. The
+datasets may also have rotated/blurred/noisy images also.
+
+b.  Output
+
+The participants needs to submit one json corresponding to each input
+image with the details of bbox in [x,y,h,w] and the class of the detected
+segments(including the rotated one also). The rotated ones may require de-
+skewing first. The Ground truth bounding are for the de-skewed images. The
+ground truth bboxes are in HBB format. For the first stage, the classes of
+the detected segment would be:
+
+{0:"Background",
+
+1: "Text",
+
+2: "Title",
+
+3: "List",
+
+4: "Table",
+5: "Figure™"}
+
+6. Online solution during Stage-1 (Mock Datasets)
+
+a. Solutions are expected to be submitted on Thursday from week
+
+commencing 15 Sep 2025, on the Mock Dataset.
+
+b. Leadersboard will be updated every Tuesday.
+c. Scores will be computed based on the evaluation metrics as under: -
+
+- . %Weight
+Category Criteria Description
+. Classification | 100
+Metric mAP
+. and
+Evaluation | Score -
+localization
+
+d. Based on performance on the shortlisting datasets top 15-20 participants
+will be called for an offline evaluation. Scores will be computed based on
+evaluation metric as above.
+
+7. Selection of 15-20 participants for offline-evalution in Stage-1
+a. On 4™ Nov 2025, the details of Shortlisting Dataset will be made
+available on the website. Results generated on the Shortlisting Dataset
+will be evaluated for final selection of 15-20 participants. The number
+
+4|Page
+
+
+may vary based on the overall performance at the discretion of the Jury
+for this Problem Statement. Submissions found Incomplete in any
+manner will not be considered for further processing. The shortlisted
+participants will be published along with the cut-off score as per the
+evaluation criteria. Participants individual scores will be shared over the
+email.
+
+Any kind of unfair means be avoided while developing and generating
+the solution and results, failing which will leads to cancellation of
+participation for the grand challenge and organisers can call the next
+participant from leader-board for evaluation.
+
+Scores will be computed based on the evaluation metrics indicated
+below:
+
+%Weight
+Category Criteria Description ovvelg
+
+Classification | 100
+and
+localization
+
+Metric mAP
+Evaluation | Score
+
+8. Solution Evaluation at the end of Stage-1 Deadline (Holdout Dataset)
+
+a.
+
+b.
+
+Shortlisted participants will be asked to demonstrate their solution at IIT
+Delhi on completion of stage-1 deadline.
+Participants will be allotted slots in which they need to run their solution
+on reference data provided by the organizers on given resources with
+following specifications: -
+i. OS —Ubuntu24.04 LTS
+ii. CPU—48+ core
+ii. RAM— 256+ GB
+
+iv. GPU - A-100, 40/80 GB
+
+v. Solution Demo Duration: 02 Hours for each selected participant
+Based on the results from solution demonstration and presentation, final
+scores will be computed based on Evaluation Metrics as mentioned
+below:
+
+Category Criteria Description % Weight
+Solution Score based on official 50
+
+. mAP Score metric on hidden hold-
+Evaluation
+
+out test dataset
+
+Solution Execution time | 10
+Robustness | Efficiency on hold-out test dataset
+(average per data point)
+
+5|Page
+
+
+Solution Memory used by 10
+Resource . .
+- Memory Solution during
+Utilization - ]
+Footprint execution
+Approach Methodologies | Start-up need to 20
+of Solution present Solution
+Development development
+approaches & proposed
+Architecture
+Team Technical Team Composition, 10
+Capabilities | Capabilities of | Qualifications,
+Start-up Team | Experience and ability
+to complete the
+challenge end to end.
+
+d. Participants are free to use any language or development framework for
+
+the solution.
+
+e. At most top 6 teams will be selected based on final score for Phase-2
+
+9. Evaluation Criteria for Stage-ll and Stage-Ill would be similar as above, only the
+metrics would change as per ‘Metric for evaluation’ in Para 3 above. The relative
+weightages of various parameters would be released before start of that stage. Apart
+from the languages given in para 2 a. above, a couple of more languages would be
+released for Stage-2 and Stage-3 participants.
+
+10. Sessions with Mentors\Experts
+a. For Stage-1, the organisers plan to meet participants via online meet or
+email to resolve their doubts, if any. This provision will be made active
+from 15th Aug 2025 and details regarding interaction will be shared on this
+website. Kindly keep viewing this website regularly for updates on this.
+b.  There will be sessions with Mentors\Experts in Stage-2 and Stage-3 for
+the willing selected participants to help them in achieving the best
+
+solutions.
+
+6|Page
+

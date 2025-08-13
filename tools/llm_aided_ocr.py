@@ -20,8 +20,12 @@ from decouple import Config as DecoupleConfig, RepositoryEnv
 import cv2
 from filelock import FileLock, Timeout
 from transformers import AutoTokenizer
-from openai import AsyncOpenAI
 from anthropic import AsyncAnthropic
+try:
+    from openai import AsyncOpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
@@ -57,7 +61,7 @@ config = DecoupleConfig(RepositoryEnv(_ENV_PATH))
 
 # Load config values (env vars override file contents automatically)
 USE_LOCAL_LLM = config.get("USE_LOCAL_LLM", default=False, cast=bool)
-API_PROVIDER = config.get("API_PROVIDER", default="OPENAI", cast=str)  # OPENAI, CLAUDE, or GROQ
+API_PROVIDER = config.get("API_PROVIDER", default="GROQ", cast=str)  # GROQ preferred; can be OPENAI or CLAUDE
 ANTHROPIC_API_KEY = config.get("ANTHROPIC_API_KEY", default=os.environ.get('ANTHROPIC_API_KEY', ''), cast=str)
 OPENAI_API_KEY = config.get("OPENAI_API_KEY", default=os.environ.get('OPENAI_API_KEY', ''), cast=str)
 GROQ_API_KEY = config.get("GROQ_API_KEY", default=os.environ.get('GROQ_API_KEY', ''), cast=str)
@@ -74,7 +78,7 @@ DEFAULT_LOCAL_MODEL_NAME = "Llama-3.1-8B-Lexi-Uncensored_Q5_fixedrope.gguf"
 LOCAL_LLM_CONTEXT_SIZE_IN_TOKENS = 2048
 USE_VERBOSE = False
 
-openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_AVAILABLE and OPENAI_API_KEY else None
 warnings.filterwarnings("ignore", category=FutureWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -354,8 +358,8 @@ async def generate_completion_from_claude(prompt: str, max_tokens: int = CLAUDE_
             return None
 
 async def generate_completion_from_openai(prompt: str, max_tokens: int = 5000) -> Optional[str]:
-    if not OPENAI_API_KEY:
-        logging.error("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
+    if not OPENAI_API_KEY or not openai_client:
+        logging.error("OpenAI not configured; skipping OpenAI completion.")
         return None
     prompt_tokens = estimate_tokens(prompt, OPENAI_COMPLETION_MODEL)
     adjusted_max_tokens = min(max_tokens, 4096 - prompt_tokens - TOKEN_BUFFER)  # 4096 is typical max for GPT-3.5 and GPT-4
@@ -551,7 +555,9 @@ Corrected text:
 """
     
     ocr_corrected_chunk = await generate_completion(ocr_correction_prompt, max_tokens=len(chunk) + 500)
-    
+    if ocr_corrected_chunk is None:
+        logging.error("OCR correction step returned None (upstream LLM failure). Returning original chunk unchanged.")
+        ocr_corrected_chunk = chunk
     processed_chunk = ocr_corrected_chunk
 
     # Step 2: Markdown Formatting (if requested)
@@ -582,7 +588,11 @@ Text to reformat:
 
 Reformatted markdown:
 """
-        processed_chunk = await generate_completion(markdown_prompt, max_tokens=len(ocr_corrected_chunk) + 500)
+        md_result = await generate_completion(markdown_prompt, max_tokens=len(ocr_corrected_chunk) + 500)
+        if md_result is not None:
+            processed_chunk = md_result
+        else:
+            logging.warning("Markdown formatting failed; using OCR corrected chunk.")
     new_context = processed_chunk[-1000:]  # Use the last 1000 characters as context for the next chunk
     logging.info(f"Chunk {chunk_index + 1}/{total_chunks} processed. Output length: {len(processed_chunk):,} characters")
     return processed_chunk, new_context
@@ -685,52 +695,6 @@ def ensure_tesseract_installed() -> None:
     logging.error(full_msg)
     raise RuntimeError(full_msg)
 
-async def assess_output_quality(original_text, processed_text):
-    max_chars = 15000  # Limit to avoid exceeding token limits
-    available_chars_per_text = max_chars // 2  # Split equally between original and processed
-
-    original_sample = original_text[:available_chars_per_text]
-    processed_sample = processed_text[:available_chars_per_text]
-    
-    prompt = f"""Compare the following samples of original OCR text with the processed output and assess the quality of the processing. Consider the following factors:
-1. Accuracy of error correction
-2. Improvement in readability
-3. Preservation of original content and meaning
-4. Appropriate use of markdown formatting (if applicable)
-5. Removal of hallucinations or irrelevant content
-
-Original text sample:
-```
-{original_sample}
-```
-
-Processed text sample:
-```
-{processed_sample}
-```
-
-Provide a quality score between 0 and 100, where 100 is perfect processing. Also provide a brief explanation of your assessment.
-
-Your response should be in the following format:
-SCORE: [Your score]
-EXPLANATION: [Your explanation]
-"""
-
-    response = await generate_completion(prompt, max_tokens=1000)
-    
-    try:
-        lines = response.strip().split('\n')
-        score_line = next(line for line in lines if line.startswith('SCORE:'))
-        score = int(score_line.split(':')[1].strip())
-        explanation = '\n'.join(line for line in lines if line.startswith('EXPLANATION:')).replace('EXPLANATION:', '').strip()
-        logging.info(f"Quality assessment: Score {score}/100")
-        logging.info(f"Explanation: {explanation}")
-        return score, explanation
-    except Exception as e:
-        logging.error(f"Error parsing quality assessment response: {e}")
-        logging.error(f"Raw response: {response}")
-        return None, None
-    
 async def main():
     try:
         # Suppress HTTP request logs
@@ -751,7 +715,16 @@ async def main():
             logging.info(f"Using Local LLM with Model: {DEFAULT_LOCAL_MODEL_NAME}")
         else:
             logging.info(f"Using API for completions: {API_PROVIDER}")
-            logging.info(f"Using OpenAI model for embeddings: {OPENAI_EMBEDDING_MODEL}")
+            if API_PROVIDER == "OPENAI":
+                if OPENAI_API_KEY:
+                    logging.info(f"Using OpenAI model for embeddings: {OPENAI_EMBEDDING_MODEL}")
+                else:
+                    logging.warning("API_PROVIDER is OPENAI but no OPENAI_API_KEY found. Set API_PROVIDER=GROQ or provide a key.")
+            elif API_PROVIDER == "GROQ":
+                if not GROQ_API_KEY:
+                    logging.error("GROQ selected but GROQ_API_KEY missing.")
+            elif API_PROVIDER == "CLAUDE" and not ANTHROPIC_API_KEY:
+                logging.error("CLAUDE selected but ANTHROPIC_API_KEY missing.")
 
         base_name = os.path.splitext(input_pdf_file_path)[0]
         output_extension = '.md' if reformat_as_markdown else '.txt'
@@ -793,13 +766,6 @@ async def main():
         logging.info(f" Raw OCR: {raw_ocr_output_file_path}")
         logging.info(f" LLM Corrected: {llm_corrected_output_file_path}")
 
-        # Perform a final quality check
-        quality_score, explanation = await assess_output_quality(raw_ocr_output, final_text)
-        if quality_score is not None:
-            logging.info(f"Final quality score: {quality_score}/100")
-            logging.info(f"Explanation: {explanation}")
-        else:
-            logging.warning("Unable to determine final quality score.")
     except Exception as e:
         logging.error(f"An error occurred in the main function: {e}")
         logging.error(traceback.format_exc())
