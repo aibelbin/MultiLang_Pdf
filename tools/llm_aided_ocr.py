@@ -8,6 +8,7 @@ import urllib.request
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import warnings
+import shutil
 from typing import List, Dict, Tuple, Optional
 from pdf2image import convert_from_path
 import pytesseract
@@ -195,14 +196,30 @@ async def generate_completion(prompt: str, max_tokens: int = 5000) -> Optional[s
         return None
 
 def get_tokenizer(model_name: str):
-    if model_name.lower().startswith("gpt-"):
-        return tiktoken.encoding_for_model(model_name)
-    elif model_name.lower().startswith("claude-"):
-        return AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b", clean_up_tokenization_spaces=False)
-    elif model_name.lower().startswith("llama-"):
-        return AutoTokenizer.from_pretrained("huggyllama/llama-7b", clean_up_tokenization_spaces=False)
-    else:
-        raise ValueError(f"Unsupported model: {model_name}")
+    """Return a tokenizer object or a lightweight approximation encoder.
+
+    Supports a wider variety of naming patterns (gpt-4o, llama3, claude-*, etc.).
+    Falls back gracefully instead of raising to avoid hard failures during token estimation.
+    """
+    lower = model_name.lower()
+    # Normalize a few common variants
+    try:
+        if lower.startswith("gpt-") or lower.startswith("gpt4") or lower.startswith("gpt-4"):
+            return tiktoken.encoding_for_model("gpt-4o-mini")  # use a stable encoding
+        if "claude" in lower:
+            return AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b", clean_up_tokenization_spaces=False)
+        if "llama" in lower:  # covers llama-, llama2, llama3, llama3-8b-8192, etc.
+            return AutoTokenizer.from_pretrained("huggyllama/llama-7b", clean_up_tokenization_spaces=False)
+        # Fallback: attempt a generic tiktoken encoding
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception as e:
+        logging.warning(f"Tokenizer load failed for {model_name}: {e}. Using approximation.")
+        # Provide an object with an encode method for compatibility
+        class ApproxEncoder:
+            def encode(self, text: str):
+                # Very rough split; each word ~1 token, punctuation separate
+                return re.findall(r'\b\w+\b|\S', re.sub(r'\s+', ' ', text.strip()))
+        return ApproxEncoder()
 
 def estimate_tokens(text: str, model_name: str) -> int:
     try:
@@ -642,6 +659,32 @@ async def process_document(list_of_extracted_text_strings: List[str], reformat_a
 def remove_corrected_text_header(text):
     return text.replace("# Corrected text\n", "").replace("# Corrected text:", "").replace("\nCorrected text", "").replace("Corrected text:", "")
 
+def ensure_tesseract_installed() -> None:
+    """Verify the Tesseract OCR binary is available; raise a helpful error if not.
+
+    Users often install the Python wrapper (pytesseract) but not the system binary.
+    This provides distro-specific hints without letting the program crash with a
+    less-informative stack trace.
+    """
+    if shutil.which("tesseract"):
+        return
+    msg_lines = [
+        "Tesseract OCR binary not found in PATH.",
+        "Install it before running this script.",
+        "Examples:",
+        "  Debian/Ubuntu:    sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng",
+        "  Fedora:           sudo dnf install -y tesseract tesseract-langpack-eng",
+        "  Arch:             sudo pacman -S tesseract tesseract-data-eng",
+        "  Mac (Homebrew):   brew install tesseract",
+        "  Windows (choco):  choco install tesseract --version=5.2.0 (or use installer)",
+        "If installed in a custom location, set TESSERACT_CMD env var, e.g.:",
+        "  export TESSERACT_CMD=/usr/local/bin/tesseract",
+        "Then re-run the script.",
+    ]
+    full_msg = "\n".join(msg_lines)
+    logging.error(full_msg)
+    raise RuntimeError(full_msg)
+
 async def assess_output_quality(original_text, processed_text):
     max_chars = 15000  # Limit to avoid exceeding token limits
     available_chars_per_text = max_chars // 2  # Split equally between original and processed
@@ -692,12 +735,15 @@ async def main():
     try:
         # Suppress HTTP request logs
         logging.getLogger("httpx").setLevel(logging.WARNING)
-        input_pdf_file_path = '160301289-Warren-Buffett-Katharine-Graham-Letter.pdf'
+        input_pdf_file_path = 'document.pdf'
         max_test_pages = 0
         skip_first_n_pages = 0
         reformat_as_markdown = True
         suppress_headers_and_page_numbers = True
-        
+
+        # Ensure tesseract binary present before doing any heavy work
+        ensure_tesseract_installed()
+
         # Download the model if using local LLM
         if USE_LOCAL_LLM:
             _, download_status = await download_models()
@@ -709,12 +755,16 @@ async def main():
 
         base_name = os.path.splitext(input_pdf_file_path)[0]
         output_extension = '.md' if reformat_as_markdown else '.txt'
-        
+
         raw_ocr_output_file_path = f"{base_name}__raw_ocr_output.txt"
         llm_corrected_output_file_path = base_name + '_llm_corrected' + output_extension
 
         list_of_scanned_images = convert_pdf_to_images(input_pdf_file_path, max_test_pages, skip_first_n_pages)
-        logging.info(f"Tesseract version: {pytesseract.get_tesseract_version()}")
+        try:
+            logging.info(f"Tesseract version: {pytesseract.get_tesseract_version()}")
+        except Exception as tev:
+            logging.error(f"Unable to query Tesseract version after initial check: {tev}")
+            raise
         logging.info("Extracting text from converted pages...")
         with ThreadPoolExecutor() as executor:
             list_of_extracted_text_strings = list(executor.map(ocr_image, list_of_scanned_images))
