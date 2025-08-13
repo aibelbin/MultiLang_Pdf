@@ -22,25 +22,53 @@ from transformers import AutoTokenizer
 from openai import AsyncOpenAI
 from anthropic import AsyncAnthropic
 try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+try:
     import nvgpu
     GPU_AVAILABLE = True
 except ImportError:
     GPU_AVAILABLE = False
     
-# Configuration
-config = DecoupleConfig(RepositoryEnv('.env'))
+############################
+# Configuration (.env discovery)
+############################
+def _locate_env_file() -> str:
+    """Search for a .env file starting from this script's directory up to two levels up."""
+    start_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(start_dir, '.env'),
+        os.path.join(os.path.dirname(start_dir), '.env'),
+        os.path.join(os.path.dirname(os.path.dirname(start_dir)), '.env'),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    # Fallback: first candidate even if missing (decouple will still allow env vars)
+    return candidates[0]
 
+_ENV_PATH = _locate_env_file()
+if not os.path.exists(_ENV_PATH):
+    logging.warning(f".env file not found at expected locations. Proceeding without file. Expected path tried: {_ENV_PATH}")
+config = DecoupleConfig(RepositoryEnv(_ENV_PATH))
+
+# Load config values (env vars override file contents automatically)
 USE_LOCAL_LLM = config.get("USE_LOCAL_LLM", default=False, cast=bool)
-API_PROVIDER = config.get("API_PROVIDER", default="OPENAI", cast=str) # OPENAI or CLAUDE
-ANTHROPIC_API_KEY = config.get("ANTHROPIC_API_KEY", default="your-anthropic-api-key", cast=str)
-OPENAI_API_KEY = config.get("OPENAI_API_KEY", default="your-openai-api-key", cast=str)
+API_PROVIDER = config.get("API_PROVIDER", default="OPENAI", cast=str)  # OPENAI, CLAUDE, or GROQ
+ANTHROPIC_API_KEY = config.get("ANTHROPIC_API_KEY", default=os.environ.get('ANTHROPIC_API_KEY', ''), cast=str)
+OPENAI_API_KEY = config.get("OPENAI_API_KEY", default=os.environ.get('OPENAI_API_KEY', ''), cast=str)
+GROQ_API_KEY = config.get("GROQ_API_KEY", default=os.environ.get('GROQ_API_KEY', ''), cast=str)
 CLAUDE_MODEL_STRING = config.get("CLAUDE_MODEL_STRING", default="claude-3-haiku-20240307", cast=str)
-CLAUDE_MAX_TOKENS = 4096 # Maximum allowed tokens for Claude API
-TOKEN_BUFFER = 500  # Buffer to account for token estimation inaccuracies
-TOKEN_CUSHION = 300 # Don't use the full max tokens to avoid hitting the limit
+CLAUDE_MAX_TOKENS = 4096  # Maximum allowed tokens for Claude API
+TOKEN_BUFFER = 500   # Buffer to account for token estimation inaccuracies
+TOKEN_CUSHION = 300  # Don't use the full max tokens to avoid hitting the limit
 OPENAI_COMPLETION_MODEL = config.get("OPENAI_COMPLETION_MODEL", default="gpt-4o-mini", cast=str)
 OPENAI_EMBEDDING_MODEL = config.get("OPENAI_EMBEDDING_MODEL", default="text-embedding-3-small", cast=str)
 OPENAI_MAX_TOKENS = 12000  # Maximum allowed tokens for OpenAI API
+GROQ_MODEL_STRING = config.get("GROQ_MODEL_STRING", default="llama3-8b-8192", cast=str)
+GROQ_MAX_TOKENS = 8192
 DEFAULT_LOCAL_MODEL_NAME = "Llama-3.1-8B-Lexi-Uncensored_Q5_fixedrope.gguf"
 LOCAL_LLM_CONTEXT_SIZE_IN_TOKENS = 2048
 USE_VERBOSE = False
@@ -160,6 +188,8 @@ async def generate_completion(prompt: str, max_tokens: int = 5000) -> Optional[s
         return await generate_completion_from_claude(prompt, max_tokens)
     elif API_PROVIDER == "OPENAI":
         return await generate_completion_from_openai(prompt, max_tokens)
+    elif API_PROVIDER == "GROQ":
+        return await generate_completion_from_groq(prompt, max_tokens)
     else:
         logging.error(f"Invalid API_PROVIDER: {API_PROVIDER}")
         return None
@@ -345,6 +375,45 @@ async def generate_completion_from_openai(prompt: str, max_tokens: int = 5000) -
         except Exception as e:
             logging.error(f"An error occurred while requesting from OpenAI API: {e}")
             return None
+
+async def generate_completion_from_groq(prompt: str, max_tokens: int = 4000) -> Optional[str]:
+    """Generate a completion using Groq's Chat Completions API (wrapped sync client)."""
+    if not GROQ_API_KEY:
+        logging.error("Groq API key missing. Set GROQ_API_KEY in .env")
+        return None
+    if not GROQ_AVAILABLE:
+        logging.error("groq library not installed. Add 'groq' to requirements.txt and pip install.")
+        return None
+    model_name = GROQ_MODEL_STRING
+    prompt_tokens = estimate_tokens(prompt, model_name if model_name.lower().startswith("llama") else "llama-7b")
+    # Reserve buffer similar to others
+    adjusted_max_tokens = min(max_tokens, GROQ_MAX_TOKENS - prompt_tokens - TOKEN_BUFFER)
+    if adjusted_max_tokens <= 0:
+        logging.warning("Prompt too long for Groq model; chunking.")
+        chunks = chunk_text(prompt, GROQ_MAX_TOKENS - TOKEN_CUSHION, model_name)
+        results: List[str] = []
+        for c in chunks:
+            part = await generate_completion_from_groq(c, max_tokens)
+            if part:
+                results.append(part)
+        return " ".join(results)
+    try:
+        # groq client is synchronous; run in thread to avoid blocking event loop
+        def _call_api(p: str, m: int):
+            client = Groq(api_key=GROQ_API_KEY)
+            return client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": p}],
+                max_tokens=m,
+                temperature=0.7,
+            )
+        response = await asyncio.to_thread(_call_api, prompt, adjusted_max_tokens)
+        text = response.choices[0].message.content
+        logging.info(f"Groq completion received (abbrev): {text[:150]}...")
+        return text
+    except Exception as e:
+        logging.error(f"Groq API error: {e}")
+        return None
 
 async def generate_completion_from_local_llm(llm_model_name: str, input_prompt: str, number_of_tokens_to_generate: int = 100, temperature: float = 0.7, grammar_file_string: str = None):
     logging.info(f"Starting text completion using model: '{llm_model_name}' for input prompt: '{input_prompt}'")
